@@ -6,6 +6,9 @@
 #include "graphics/common/LoRaPresets.h"
 #include "graphics/common/Ringtones.h"
 #include "graphics/common/ViewController.h"
+#if defined(BOPOMOFO_IME_LVGL)
+#include "graphics/BopomofoIME.h"
+#endif
 #include "graphics/driver/DisplayDriver.h"
 #include "graphics/driver/DisplayDriverFactory.h"
 #include "graphics/map/MapPanel.h"
@@ -750,6 +753,24 @@ void TFTView_320x240::ui_events_init(void)
 
     // keyboard
     lv_obj_add_event_cb(objects.keyboard, ui_event_Keyboard, LV_EVENT_CLICKED, this);
+#if defined(BOPOMOFO_IME_LVGL)
+    // The Bopomofo map needs the press itself, not the click: it has to see the
+    // key before LVGL's own handler would have typed it, and its buttons are
+    // not at the indices ui_event_Keyboard switches on.
+    lv_obj_add_event_cb(
+        objects.keyboard, [](lv_event_t *) { BopomofoIME::instance().handleButton(); }, LV_EVENT_VALUE_CHANGED, nullptr);
+    BopomofoIME::instance().init(objects.keyboard);
+    // What confirming means is the view's business, so the input method asks
+    // rather than decides. This is the checkmark branch of ui_event_Keyboard.
+    BopomofoIME::instance().setConfirmCallback([]() {
+        if (THIS->activePanel == objects.messages_panel) {
+            THIS->hideKeyboard(objects.messages_panel);
+        } else {
+            lv_obj_add_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN);
+        }
+        lv_group_focus_obj(objects.message_input_area);
+    });
+#endif
     lv_obj_add_event_cb(objects.keyboard_button_0, ui_event_KeyboardButton, LV_EVENT_CLICKED, (void *)0);
     lv_obj_add_event_cb(objects.keyboard_button_1, ui_event_KeyboardButton, LV_EVENT_CLICKED, (void *)1);
     lv_obj_add_event_cb(objects.keyboard_button_2, ui_event_KeyboardButton, LV_EVENT_CLICKED, (void *)2);
@@ -1642,6 +1663,14 @@ void TFTView_320x240::ui_event_Keyboard(lv_event_t *e)
         lv_obj_t *kb = lv_event_get_target_obj(e);
         uint32_t btn_id = lv_keyboard_get_selected_button(kb);
 
+#if defined(BOPOMOFO_IME_LVGL)
+        // The cases below are positions in the Latin map; under the Bopomofo
+        // map the same indices are ordinary keys, which BopomofoIME has already
+        // handled on the press.
+        if (BopomofoIME::instance().active())
+            return;
+#endif
+
         switch (btn_id) {
         case 22: { // enter (filtered out by one-liner text input area, so we replace it)
             // lv_obj_t *ta = lv_keyboard_get_textarea(kb);
@@ -1650,7 +1679,14 @@ void TFTView_320x240::ui_event_Keyboard(lv_event_t *e)
             break;
         }
         case 35: { // keyboard
+#if defined(BOPOMOFO_IME_LVGL)
+            // The key that switches keyboards on a phone switches input methods
+            // here; the popover toggle it used to carry has no equivalent on the
+            // Bopomofo side and nothing else reaches for it.
+            BopomofoIME::instance().toggleMode();
+#else
             lv_keyboard_set_popovers(objects.keyboard, !lv_keyboard_get_popovers(kb));
+#endif
             break;
         }
         case 36: { // left
@@ -6851,10 +6887,18 @@ void TFTView_320x240::showKeyboard(lv_obj_t *textArea)
         }
     }
     lv_keyboard_set_textarea(objects.keyboard, textArea);
+#if defined(BOPOMOFO_IME_LVGL)
+    // Last, because attaching puts the keyboard into the stored input mode and
+    // the Bopomofo map wants no text area of its own.
+    BopomofoIME::instance().attach(textArea);
+#endif
 }
 
 void TFTView_320x240::hideKeyboard(lv_obj_t *panel)
 {
+#if defined(BOPOMOFO_IME_LVGL)
+    BopomofoIME::instance().detach();
+#endif
     lv_area_t kb_coords;
     lv_obj_get_coords(objects.keyboard, &kb_coords);
     uint32_t kb_h = kb_coords.y2 - kb_coords.y1;
