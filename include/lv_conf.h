@@ -526,7 +526,10 @@
 /*Optionally declare custom fonts here.
  *You can use these fonts as default font too and they will be available globally.
  *E.g. #define LV_FONT_CUSTOM_DECLARE   LV_FONT_DECLARE(my_font_1) LV_FONT_DECLARE(my_font_2)*/
-#define LV_FONT_CUSTOM_DECLARE LV_FONT_DECLARE(ui_font_montserrat_12) LV_FONT_DECLARE(ui_font_montserrat_14) LV_FONT_DECLARE(ui_font_montserrat_16) LV_FONT_DECLARE(ui_font_montserrat_20)
+/* ui_font_tc_16 is the CJK fallback face the four Montserrat fonts point at.
+ * It has to be declared here because lv_font_t is const rodata: the fallback
+ * chain can only be set in the font definitions themselves, not at runtime. */
+#define LV_FONT_CUSTOM_DECLARE LV_FONT_DECLARE(ui_font_montserrat_12) LV_FONT_DECLARE(ui_font_montserrat_14) LV_FONT_DECLARE(ui_font_montserrat_16) LV_FONT_DECLARE(ui_font_montserrat_20) LV_FONT_DECLARE(ui_font_tc_16)
 
 /*Always set a default font*/
 #define LV_FONT_DEFAULT &ui_font_montserrat_14
