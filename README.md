@@ -1,3 +1,17 @@
+> **Fork notice** — This is a fork of [meshtastic/device-ui](https://github.com/meshtastic/device-ui)
+> that adds a Traditional Chinese fallback face to the four Montserrat fonts, so that
+> MUI boards built from [meshtastic-firmware-zhtw](https://github.com/Kent-Liu/meshtastic-firmware-zhtw)
+> can render Han characters, Bopomofo and tone marks. Branch `zhtw-2.7.25` is upstream
+> `1c45ebc` plus that one commit; nothing else is changed. Licensing (GPL-3.0) and the
+> upstream README below are untouched. Not affiliated with or endorsed by the Meshtastic
+> project; Meshtastic® is a registered trademark of Meshtastic LLC.
+>
+> **關於這個 fork** — 這是 [meshtastic/device-ui](https://github.com/meshtastic/device-ui)
+> 的分支，替四份 Montserrat 字型掛上繁體中文 fallback，讓
+> [meshtastic-firmware-zhtw](https://github.com/Kent-Liu/meshtastic-firmware-zhtw)
+> 編出來的 MUI 機種顯示得出漢字、注音符號與聲調符號。`zhtw-2.7.25` 分支就是上游
+> `1c45ebc` 加上那一個 commit，其餘一字未改。非官方、未經 Meshtastic 專案背書。
+
 #
 
 <div align="center">
