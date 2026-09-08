@@ -60,7 +60,9 @@ class BopomofoIME
     enum class Cell : uint8_t {
         None,        // the composition read-out, which is not a button
         Candidate,   // data = index into the candidate list
-        MoreCands,   // next page of candidates
+        ExpandGrid,  // swap the key map for the full candidate grid
+        GridPage,    // next page of the grid, wrapping at the end
+        CloseGrid,   // back to the keys, composition untouched
         Symbol,      // data = ASCII key handed to the engine
         Text,        // data = index into extraText_, inserted as it stands
         Space,
@@ -75,6 +77,10 @@ class BopomofoIME
     };
 
     void rebuildMap();
+    void buildKeyMap();
+    void buildCandidateGrid();
+    void addButton(const std::string &text, uint32_t ctrl, Cell kind, uint8_t data);
+    void newRow();
     void refreshCandidates();
     void commit(const std::string &word);
     void insertText(const char *utf8);
@@ -88,8 +94,13 @@ class BopomofoIME
 
     bool chinese_    = true;  // stored preference, also the mode on screen
     bool storedMode_ = true;  // what the preference file holds, to write only on change
-    // Candidates are paged by how many actually fitted on the row, which
-    // depends on how long the words on it were.
+    // The candidate row holds three or four words at most, while the engine
+    // offers up to MAX_CANDIDATES. The grid shows the rest of them on the same
+    // widget: same geometry, same row count, so nothing moves or resizes when
+    // it opens.
+    bool grid_ = false;
+    // Paged by how many words actually fitted, which depends on how long they
+    // were - on the row and in the grid alike.
     int candFirst_ = 0;
     int candShown_ = 0;
 

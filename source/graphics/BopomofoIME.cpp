@@ -32,12 +32,23 @@ const char *const KEY_TO_LATIN = "英數";
 const char *const KEY_SPACE    = "空白";
 const char *const KEY_CONFIRM  = "送出";
 const char *const KEY_MORE     = "▼";
+const char *const KEY_COLLAPSE = "▲";
+const char *const KEY_NEXT     = "▶";
 
 // Width units. LVGL normalises each row on its own, so these only have to be
 // consistent within a row.
 constexpr uint8_t ROW_UNITS      = 11; // what a full Bopomofo row adds up to
 constexpr uint8_t COMPOSE_UNITS  = 3;  // the read-out at the head of the candidate row
 constexpr uint8_t MAX_CAND_UNITS = 4;  // a four-character word, the longest the dictionary holds
+
+// The expanded grid. Five rows of candidates plus one control row comes to the
+// same six rows the key map has, which is what keeps the keyboard from
+// resizing its buttons when the grid opens. Five columns on a 320px-wide panel
+// leaves a comfortable touch target; a four-character word is the only length
+// that needs two of them at the font the keyboard runs.
+constexpr uint8_t GRID_ROWS       = 5;
+constexpr uint8_t GRID_UNITS      = 5;
+constexpr size_t  GRID_WIDE_CHARS = 4;
 
 // Candidates are addressed by an absolute index that has to survive in a byte.
 constexpr int MAX_CANDIDATES = 40;
@@ -105,6 +116,7 @@ void BopomofoIME::attach(lv_obj_t *textarea)
         return;
     ta_ = textarea;
     engine_.reset();
+    grid_      = false;
     candFirst_ = 0;
     applyKeyboardMode();
 }
@@ -112,6 +124,7 @@ void BopomofoIME::attach(lv_obj_t *textarea)
 void BopomofoIME::detach()
 {
     engine_.reset();
+    grid_      = false;
     candFirst_ = 0;
     storePrefs();
 }
@@ -122,6 +135,7 @@ void BopomofoIME::toggleMode()
         return;
     chinese_ = !chinese_;
     engine_.reset();
+    grid_      = false;
     candFirst_ = 0;
     applyKeyboardMode();
 }
@@ -169,6 +183,7 @@ void BopomofoIME::commit(const std::string &word)
     if (word.empty())
         return;
     insertText(word.c_str());
+    grid_ = false;
 
     // Offer what usually follows the character just typed. The list this
     // produces is not a composition, so the composition read-out stays empty
@@ -204,10 +219,20 @@ bool BopomofoIME::handleButton()
         break;
     }
 
-    case Cell::MoreCands:
+    case Cell::ExpandGrid:
+        grid_      = true;
+        candFirst_ = 0;
+        break;
+
+    case Cell::GridPage:
         candFirst_ += candShown_;
         if (candFirst_ >= (int)engine_.candidates().size())
             candFirst_ = 0;
+        break;
+
+    case Cell::CloseGrid:
+        grid_      = false;
+        candFirst_ = 0;
         break;
 
     case Cell::Symbol:
@@ -281,6 +306,22 @@ bool BopomofoIME::handleButton()
     return true;
 }
 
+// The control word is built by OR-ing LVGL's flags with a width, which in C++
+// is an int; the cast back to the enum is where that lands.
+void BopomofoIME::addButton(const std::string &text, uint32_t ctrl, Cell kind, uint8_t data)
+{
+    cells_.push_back(text);
+    ctrl_.push_back((lv_buttonmatrix_ctrl_t)ctrl);
+    info_.push_back({kind, data});
+}
+
+// Row breaks live in the map but not in the control or info arrays, which is
+// what makes an info_ index the same thing as a button id.
+void BopomofoIME::newRow()
+{
+    cells_.push_back("\n");
+}
+
 void BopomofoIME::rebuildMap()
 {
     cells_.clear();
@@ -290,15 +331,22 @@ void BopomofoIME::rebuildMap()
     cells_.reserve(64);
     map_.reserve(72);
 
-    // The control word is built by OR-ing LVGL's flags with a width, which in
-    // C++ is an int; the cast back to the enum is where that lands.
-    auto addButton = [&](const std::string &text, uint32_t ctrl, Cell kind, uint8_t data) {
-        cells_.push_back(text);
-        ctrl_.push_back((lv_buttonmatrix_ctrl_t)ctrl);
-        info_.push_back({kind, data});
-    };
-    auto newRow = [&]() { cells_.push_back("\n"); };
+    if (grid_)
+        buildCandidateGrid();
+    else
+        buildKeyMap();
 
+    // The map LVGL keeps is an array of pointers into cells_, so it has to be
+    // rebuilt after the last push_back and handed over immediately.
+    for (const std::string &c : cells_)
+        map_.push_back(c.c_str());
+    map_.push_back("");
+
+    lv_keyboard_set_map(kb_, LV_KEYBOARD_MODE_USER_1, map_.data(), ctrl_.data());
+}
+
+void BopomofoIME::buildKeyMap()
+{
     // ── candidate row ────────────────────────────────────────────
     // Always present, empty or not: LVGL divides the keyboard's height by the
     // number of rows, so a row that comes and goes would resize every key under
@@ -309,13 +357,12 @@ void BopomofoIME::rebuildMap()
     {
         addButton(comp.empty() ? " " : comp, LV_BUTTONMATRIX_CTRL_DISABLED | COMPOSE_UNITS, Cell::None, 0);
 
-        int units = ROW_UNITS - COMPOSE_UNITS - 1; // one unit held back for the paging key
-        int idx   = candFirst_;
-        if (idx >= (int)cands.size())
-            idx = candFirst_ = 0;
+        // The row always starts at the top of the list; paging through the rest
+        // is the grid's job, and candFirst_ is the grid's page start alone.
+        int units = ROW_UNITS - COMPOSE_UNITS - 1; // one unit held back for the grid key
         int shown = 0;
-        while (idx + shown < (int)cands.size() && units > 0) {
-            const std::string &c = cands[idx + shown];
+        while (shown < (int)cands.size() && units > 0) {
+            const std::string &c = cands[shown];
             uint8_t w = (uint8_t)utf8Count(c);
             if (w < 1)
                 w = 1;
@@ -323,21 +370,21 @@ void BopomofoIME::rebuildMap()
                 w = MAX_CAND_UNITS;
             if (w > units)
                 break;
-            addButton(c, LV_BUTTONMATRIX_CTRL_POPOVER | w, Cell::Candidate, (uint8_t)(idx + shown));
+            addButton(c, LV_BUTTONMATRIX_CTRL_POPOVER | w, Cell::Candidate, (uint8_t)shown);
             units -= w;
             shown++;
         }
         // Nothing fitted, which only happens when the first candidate is wider
         // than the row: show it anyway rather than an empty bar.
         if (shown == 0 && !cands.empty()) {
-            addButton(cands[idx], MAX_CAND_UNITS, Cell::Candidate, (uint8_t)idx);
+            addButton(cands[0], MAX_CAND_UNITS, Cell::Candidate, 0);
             shown = 1;
         }
         candShown_ = shown;
-        // The key is there whenever the list does not end on this page, and
-        // also on the last page, where it wraps back to the first.
-        if (idx + shown < (int)cands.size() || candFirst_ > 0)
-            addButton(KEY_MORE, 1, Cell::MoreCands, 0);
+        // Whatever did not fit is reachable through the grid, so the key is
+        // there exactly when the row is showing less than the whole list.
+        if (shown < (int)cands.size())
+            addButton(KEY_MORE, 1, Cell::ExpandGrid, 0);
         else if (shown == 0)
             addButton(" ", LV_BUTTONMATRIX_CTRL_DISABLED | (ROW_UNITS - COMPOSE_UNITS), Cell::None, 0);
         newRow();
@@ -368,14 +415,51 @@ void BopomofoIME::rebuildMap()
     addButton(TEXT_KEYS[2], 1, Cell::Text, 2);
     addButton(TEXT_KEYS[3], 1, Cell::Text, 3);
     addButton(KEY_CONFIRM, 2, Cell::Confirm, 0);
+}
 
-    // The map LVGL keeps is an array of pointers into cells_, so it has to be
-    // rebuilt after the last push_back and handed over immediately.
-    for (const std::string &c : cells_)
-        map_.push_back(c.c_str());
-    map_.push_back("");
+// ── candidate grid ───────────────────────────────────────────────
+// The expanded picker is the keyboard itself with a different map, not a
+// second widget laid over it: the keyboard's own position depends on where the
+// text area ended up, so an overlay would have to chase it, and a panel of its
+// own would have to repeat the styling, the font and the event wiring for no
+// gain. Selecting from it commits and closes, which is what the user came for;
+// the collapse key leaves the composition exactly as it was.
+void BopomofoIME::buildCandidateGrid()
+{
+    const std::vector<std::string> &cands = engine_.candidates();
 
-    lv_keyboard_set_map(kb_, LV_KEYBOARD_MODE_USER_1, map_.data(), ctrl_.data());
+    int idx = candFirst_;
+    if (idx >= (int)cands.size())
+        idx = candFirst_ = 0;
+
+    int shown = 0;
+    for (uint8_t row = 0; row < GRID_ROWS; row++) {
+        int units = GRID_UNITS;
+        while (idx + shown < (int)cands.size() && units > 0) {
+            const std::string &c = cands[idx + shown];
+            const uint8_t      w = utf8Count(c) >= GRID_WIDE_CHARS ? 2 : 1;
+            if (w > units)
+                break;
+            addButton(c, LV_BUTTONMATRIX_CTRL_POPOVER | w, Cell::Candidate, (uint8_t)(idx + shown));
+            units -= w;
+            shown++;
+        }
+        // A short row is padded rather than left to LVGL, which would stretch
+        // the few buttons on it to the full width and break the column grid.
+        if (units > 0)
+            addButton(" ", LV_BUTTONMATRIX_CTRL_DISABLED | (uint8_t)units, Cell::None, 0);
+        newRow();
+    }
+    candShown_ = shown;
+
+    const std::string comp      = engine_.composingText();
+    const bool        morePages = (idx + shown) < (int)cands.size();
+    addButton(comp.empty() ? " " : comp, LV_BUTTONMATRIX_CTRL_DISABLED | 2, Cell::None, 0);
+    // Paging is forward-only and wraps: the engine hands over at most
+    // MAX_CANDIDATES, which is two of these pages, so a second key to walk back
+    // would cost a column to save one press.
+    addButton(KEY_NEXT, (morePages || candFirst_ > 0 ? 0u : LV_BUTTONMATRIX_CTRL_DISABLED) | 1u, Cell::GridPage, 0);
+    addButton(KEY_COLLAPSE, 2, Cell::CloseGrid, 0);
 }
 
 void BopomofoIME::loadPrefs()
