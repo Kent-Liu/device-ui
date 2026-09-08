@@ -35,14 +35,22 @@
 // to, live in bpmf::Engine (bpmf_engine.h), which is what makes this layer safe
 // to call from more than one input session.
 
-// The dictionary is a lightweight trie whose nodes carry no per-word metadata:
-// each node owns a slice of BPMF_CAND_DATA holding its candidates already in
-// frequency order. A record is
-//     header_byte  code_point_lo code_point_hi  (once per character)
+// The dictionary is a lightweight trie whose nodes carry almost no per-word
+// metadata: each node owns a slice of BPMF_CAND_DATA holding its candidates
+// already in frequency order. A record is
+//     header_byte [weight_byte] code_point_lo code_point_hi  (once per character)
 // where the header holds the character count and the tone bitmask (see
 // BPMF_REC_COUNT / BPMF_REC_TONE), the tone bits being zero unless the generator
-// ran with --tones (BPMF_HAS_WORDS_TONE). Ranking therefore comes for free from
-// the byte order - there are no weight/offset/char-count arrays to walk.
+// ran with --tones (BPMF_HAS_WORDS_TONE). Within one node the byte order is the
+// ranking, so there is no offset or char-count array to walk.
+//
+// The weight byte is present only when the dictionary was generated with
+// --weights (BPMF_HAS_WEIGHTS). It exists for one job: ranking candidates that
+// came from *different* nodes. A consonant abbreviation such as ㄋㄏ walks every
+// ㄋ syllable in turn, and merging those nodes without a comparable number leaves
+// the node numbering in charge - which is unrelated to how common a word is, and
+// is what buried 你好 at rank 35. Builds without the byte still work; their
+// cross-node order is the old node order.
 //
 // The structure itself is implied rather than stored. Nodes are numbered
 // breadth-first, so a node's children occupy one consecutive run and
@@ -82,12 +90,27 @@ using MatchTable = std::vector<std::vector<int>>;
 // the lengths of the nodes in between. At most (1 << BPMF_CKPT_SHIFT) - 1 byte
 // additions, which is immaterial next to the full-blob scan predict_next
 // already performs on every keystroke.
+// BPMF_CAND_LEN is not always a byte count: with the weight byte present every
+// record is even-sized, so the generator stores half the run and the column fits
+// in a uint8_t instead of needing a uint16_t for the handful of nodes that run
+// past 255 bytes. BPMF_CAND_CKPT is a plain byte offset either way.
+#if defined(BPMF_CAND_LEN_SHIFT)
+constexpr uint32_t CAND_LEN_SHIFT = BPMF_CAND_LEN_SHIFT;
+#else
+constexpr uint32_t CAND_LEN_SHIFT = 0;
+#endif
+
+inline uint32_t cand_bytes(int node)
+{
+    return (uint32_t)BPMF_CAND_LEN[node] << CAND_LEN_SHIFT;
+}
+
 inline uint32_t cand_off(int node)
 {
     uint32_t base = (uint32_t)node >> BPMF_CKPT_SHIFT;
     uint32_t off = BPMF_CAND_CKPT[base];
     for (uint32_t i = base << BPMF_CKPT_SHIFT; i < (uint32_t)node; i++)
-        off += BPMF_CAND_LEN[i];
+        off += cand_bytes((int)i);
     return off;
 }
 
@@ -145,7 +168,15 @@ struct Cand {
     std::string surface;
     uint8_t     tone;       // matching bit from BPMF_HAS_WORDS_TONE data; 0 otherwise
     bool        completion; // word longer than what was typed (see collect_subtree)
+    uint8_t     weight;     // log-quantised corpus frequency; 0 without BPMF_HAS_WEIGHTS
 };
+
+// Bytes between the header and the first code point.
+#if defined(BPMF_HAS_WEIGHTS)
+constexpr uint32_t REC_WEIGHT_BYTES = 1;
+#else
+constexpr uint32_t REC_WEIGHT_BYTES = 0;
+#endif
 
 // ── Candidate blob decoding ───────────────────────────────────────────────
 // Surfaces are stored as 16-bit code points, so every candidate is re-encoded to
@@ -203,7 +234,7 @@ inline int char_count(const std::string &s)
 inline void emit_node(int node, std::vector<Cand> &out, int max_out, bool completion = false)
 {
     uint32_t off = cand_off(node);
-    uint32_t len = BPMF_CAND_LEN[node];
+    uint32_t len = cand_bytes(node);
     const unsigned char *d = BPMF_CAND_DATA + off;
 
     uint32_t p = 0;
@@ -212,6 +243,10 @@ inline void emit_node(int node, std::vector<Cand> &out, int max_out, bool comple
         uint8_t header = d[p++];
         uint8_t nchars = BPMF_REC_COUNT(header);
         uint8_t tone   = BPMF_REC_TONE(header);
+        uint8_t weight = 0;
+#if defined(BPMF_HAS_WEIGHTS)
+        weight = d[p++];
+#endif
         std::string surface = decode_surface(d + p, nchars);
         p += (uint32_t)nchars * 2;
 
@@ -221,7 +256,7 @@ inline void emit_node(int node, std::vector<Cand> &out, int max_out, bool comple
         }
         if (dup)
             continue;
-        out.push_back({std::move(surface), tone, completion});
+        out.push_back({std::move(surface), tone, completion, weight});
     }
 }
 
@@ -382,6 +417,7 @@ inline std::vector<std::string> predict_next(const std::string &prefix, int max_
         if ((int)out.size() >= max_out)
             break;
         uint8_t nchars = BPMF_REC_COUNT(d[p++]);
+        p += REC_WEIGHT_BYTES;
 
         if (nchars > want.size()) {
             bool match = true;
@@ -446,7 +482,26 @@ inline std::vector<std::string> unified_search(const std::string &input, int max
     // phrases that begin with them. Phase 2: consonant abbreviations (ㄋㄏ → 你好)
     // fill in behind them, deduped against phase 1.
     dfs_walk(stripped.c_str(), len, 0, 0, 0, token_len, match_at, cands, internalCap, false);
+    const size_t exactEnd = cands.size();
     dfs_walk(stripped.c_str(), len, 0, 0, 0, token_len, match_at, cands, internalCap, true);
+
+#if defined(BPMF_HAS_WEIGHTS)
+    // Rank by corpus frequency *within* each phase, never across them. The two
+    // phases are a ranking decision in themselves - whole syllables ahead of
+    // abbreviations - and sorting the whole list by weight would undo it: 難以 is
+    // a commoner word than the character 你, so a typed ㄋㄧ would surface the
+    // abbreviation ahead of the character actually asked for. Completions stay
+    // behind the exact-length candidates of their own phase for the same reason
+    // they are excluded from the phrases-first pass below: their trailing
+    // characters were never typed.
+    auto byWeight = [](const Cand &a, const Cand &b) {
+        if (a.completion != b.completion)
+            return !a.completion;
+        return a.weight > b.weight;
+    };
+    std::stable_sort(cands.begin(), cands.begin() + exactEnd, byWeight);
+    std::stable_sort(cands.begin() + exactEnd, cands.end(), byWeight);
+#endif
 
     bool noTone = true;
 #if defined(BPMF_HAS_WORDS_TONE)
@@ -486,7 +541,17 @@ inline std::vector<std::string> unified_search(const std::string &input, int max
     // puts them; typing more, or the post-commit prediction, brings them up.
     if (noTone)
         std::stable_partition(cands.begin(), cands.end(), [](const Cand &c) {
-            return !c.completion && char_count(c.surface) >= 2;
+            return !c.completion && char_count(c.surface) >= 2
+#if defined(BPMF_PHRASE_FLOOR)
+                   // Being a phrase is not enough to outrank the single characters
+                   // sharing the reading: 那樣 and 難以 are phrases too, and floating
+                   // every one of them is why ㄋㄧ used to answer with them instead of
+                   // 你. The floor is measured by the generator from a raw corpus
+                   // count, so the words that clear it are the ones people actually
+                   // send - the boost list is lifted over it by construction.
+                   && c.weight >= BPMF_PHRASE_FLOOR
+#endif
+                ;
         });
 
     if ((int)cands.size() > cap)
