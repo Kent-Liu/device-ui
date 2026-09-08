@@ -48,9 +48,10 @@
 // --weights (BPMF_HAS_WEIGHTS). It exists for one job: ranking candidates that
 // came from *different* nodes. A consonant abbreviation such as ㄋㄏ walks every
 // ㄋ syllable in turn, and merging those nodes without a comparable number leaves
-// the node numbering in charge - which is unrelated to how common a word is, and
-// is what buried 你好 at rank 35. Builds without the byte still work; their
-// cross-node order is the old node order.
+// the node numbering in charge, which bears no relation to how common a word is:
+// a phrase people send constantly lands wherever its syllable happens to sit in
+// the BFS order. Builds without the byte still work; their cross-node order is
+// that node order.
 //
 // The structure itself is implied rather than stored. Nodes are numbered
 // breadth-first, so a node's children occupy one consecutive run and
@@ -544,11 +545,11 @@ inline std::vector<std::string> unified_search(const std::string &input, int max
             return !c.completion && char_count(c.surface) >= 2
 #if defined(BPMF_PHRASE_FLOOR)
                    // Being a phrase is not enough to outrank the single characters
-                   // sharing the reading: 那樣 and 難以 are phrases too, and floating
-                   // every one of them is why ㄋㄧ used to answer with them instead of
-                   // 你. The floor is measured by the generator from a raw corpus
-                   // count, so the words that clear it are the ones people actually
-                   // send - the boost list is lifted over it by construction.
+                   // sharing the reading: 那樣 and 難以 have the same shape as 早安 and
+                   // differ only in how often anyone sends them, so floating every
+                   // phrase hides the character that was actually typed. The floor is
+                   // measured by the generator from a raw corpus count; boost-list
+                   // words clear it by construction.
                    && c.weight >= BPMF_PHRASE_FLOOR
 #endif
                 ;
