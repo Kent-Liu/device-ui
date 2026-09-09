@@ -414,10 +414,31 @@ inline std::vector<std::string> predict_next(const std::string &prefix, int max_
     uint32_t total = (uint32_t)sizeof(BPMF_CAND_DATA);
     const unsigned char *d = BPMF_CAND_DATA;
     uint32_t p = 0;
+
+#if defined(BPMF_HAS_WEIGHTS)
+    // The blob is in node order, which is the breadth-first numbering of the
+    // trie and says nothing about how common a word is: stopping at the first
+    // max_out matches answers 中 with 中靶 中波 中杯 and never reaches 中文,
+    // which sits forty thousand records further in. So the whole blob is walked
+    // and the heaviest max_out matches are kept. Records that cannot make the
+    // list are rejected on their weight byte alone, before being decoded.
+    struct Hit {
+        uint8_t     weight;
+        std::string surface;
+    };
+    std::vector<Hit> hits;
+    hits.reserve((size_t)max_out + 1);
+#endif
+
     while (p < total) {
+#if !defined(BPMF_HAS_WEIGHTS)
         if ((int)out.size() >= max_out)
             break;
+#endif
         uint8_t nchars = BPMF_REC_COUNT(d[p++]);
+#if defined(BPMF_HAS_WEIGHTS)
+        const uint8_t weight = d[p];
+#endif
         p += REC_WEIGHT_BYTES;
 
         if (nchars > want.size()) {
@@ -425,6 +446,25 @@ inline std::vector<std::string> predict_next(const std::string &prefix, int max_
             for (size_t i = 0; i < want.size(); i++) {
                 if (cp_at(d + p, (uint32_t)i * 2) != want[i]) { match = false; break; }
             }
+#if defined(BPMF_HAS_WEIGHTS)
+            if (match && ((int)hits.size() < max_out || weight > hits.back().weight)) {
+                std::string surface = decode_surface(d + p, nchars);
+                bool dup = false;
+                for (const auto &e : hits) {
+                    if (e.surface == surface) { dup = true; break; }
+                }
+                if (!dup) {
+                    // Insert after the equally heavy ones, so words of the same
+                    // weight keep the node order they were found in.
+                    auto at = hits.begin();
+                    while (at != hits.end() && at->weight >= weight)
+                        ++at;
+                    hits.insert(at, Hit{weight, std::move(surface)});
+                    if ((int)hits.size() > max_out)
+                        hits.pop_back();
+                }
+            }
+#else
             if (match) {
                 std::string surface = decode_surface(d + p, nchars);
                 bool dup = false;
@@ -434,9 +474,16 @@ inline std::vector<std::string> predict_next(const std::string &prefix, int max_
                 if (!dup)
                     out.push_back(std::move(surface));
             }
+#endif
         }
         p += (uint32_t)nchars * 2;
     }
+
+#if defined(BPMF_HAS_WEIGHTS)
+    out.reserve(hits.size());
+    for (auto &h : hits)
+        out.push_back(std::move(h.surface));
+#endif
     return out;
 }
 
