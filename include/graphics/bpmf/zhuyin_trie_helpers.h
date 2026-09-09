@@ -386,7 +386,10 @@ inline void dfs_walk(const char *full, int len, int pos, int node, int depth,
 inline std::vector<std::string> predict_next(const std::string &prefix, int max_out = 20)
 {
     std::vector<std::string> out;
-    if (prefix.empty())
+    // A cap of zero also has to leave here: the weighted path below rejects a
+    // record by comparing it against the lightest one kept so far, which is not
+    // there to be read while nothing has been kept.
+    if (prefix.empty() || max_out <= 0)
         return out;
 
     std::vector<uint16_t> want;

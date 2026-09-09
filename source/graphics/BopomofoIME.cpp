@@ -131,6 +131,7 @@ void BopomofoIME::detach()
     engine_.reset();
     grid_      = false;
     candFirst_ = 0;
+    page_      = 0;
     storePrefs();
 }
 
