@@ -61,7 +61,7 @@ class BopomofoIME
         None,        // the composition read-out, which is not a button
         Candidate,   // data = index into the candidate list
         ExpandGrid,  // swap the key map for the full candidate grid
-        GridPage,    // next page of the grid, wrapping at the end
+        GridPage,    // data = 0 back a page, 1 on a page
         CloseGrid,   // back to the keys, composition untouched
         Symbol,      // data = ASCII key handed to the engine
         Text,        // data = index into extraText_, inserted as it stands
@@ -100,9 +100,13 @@ class BopomofoIME
     // it opens.
     bool grid_ = false;
     // Paged by how many words actually fitted, which depends on how long they
-    // were - on the row and in the grid alike.
-    int candFirst_ = 0;
-    int candShown_ = 0;
+    // were - on the row and in the grid alike. How many fitted is only known
+    // after a page has been laid out, so walking back needs the starts that
+    // were already visited rather than arithmetic.
+    int              candFirst_ = 0;
+    int              candShown_ = 0;
+    std::vector<int> pageStarts_{0};
+    int              page_ = 0;
 
     // The map handed to LVGL is a pointer that stays live, so the strings it
     // points at have to outlive the call: both vectors are rebuilt together and

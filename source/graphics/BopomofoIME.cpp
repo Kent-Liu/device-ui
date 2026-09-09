@@ -33,6 +33,7 @@ const char *const KEY_SPACE    = "空白";
 const char *const KEY_CONFIRM  = "送出";
 const char *const KEY_MORE     = "▼";
 const char *const KEY_COLLAPSE = "▲";
+const char *const KEY_PREV     = "◀";
 const char *const KEY_NEXT     = "▶";
 
 // Width units. LVGL normalises each row on its own, so these only have to be
@@ -50,8 +51,12 @@ constexpr uint8_t GRID_ROWS       = 5;
 constexpr uint8_t GRID_UNITS      = 5;
 constexpr size_t  GRID_WIDE_CHARS = 4;
 
-// Candidates are addressed by an absolute index that has to survive in a byte.
-constexpr int MAX_CANDIDATES = 40;
+// Enough to fill three pages of the grid, which is what the panel can show
+// before the words are too rare to be worth paging to. The engine gathers with
+// its own headroom and hands over the best of them, so asking for more costs a
+// longer sort, not a longer walk. Candidates are addressed by an absolute index
+// that has to survive in a byte, which is the ceiling this may not cross.
+constexpr int MAX_CANDIDATES = GRID_ROWS * GRID_UNITS * 3;
 
 size_t utf8CharLen(unsigned char c)
 {
@@ -220,19 +225,32 @@ bool BopomofoIME::handleButton()
     }
 
     case Cell::ExpandGrid:
-        grid_      = true;
-        candFirst_ = 0;
+        grid_       = true;
+        candFirst_  = 0;
+        page_       = 0;
+        pageStarts_ = {0};
         break;
 
     case Cell::GridPage:
-        candFirst_ += candShown_;
-        if (candFirst_ >= (int)engine_.candidates().size())
+        if (cell.data == 0) {
+            if (page_ > 0)
+                candFirst_ = pageStarts_[--page_];
+        } else if (candFirst_ + candShown_ < (int)engine_.candidates().size()) {
+            if (page_ + 1 == (int)pageStarts_.size())
+                pageStarts_.push_back(candFirst_ + candShown_);
+            candFirst_ = pageStarts_[++page_];
+        } else {
+            // Past the last page, back to the first: the way out of the end of
+            // the list without a second press.
+            page_      = 0;
             candFirst_ = 0;
+        }
         break;
 
     case Cell::CloseGrid:
         grid_      = false;
         candFirst_ = 0;
+        page_      = 0;
         break;
 
     case Cell::Symbol:
@@ -455,11 +473,11 @@ void BopomofoIME::buildCandidateGrid()
     const std::string comp      = engine_.composingText();
     const bool        morePages = (idx + shown) < (int)cands.size();
     addButton(comp.empty() ? " " : comp, LV_BUTTONMATRIX_CTRL_DISABLED | 2, Cell::None, 0);
-    // Paging is forward-only and wraps: the engine hands over at most
-    // MAX_CANDIDATES, which is two of these pages, so a second key to walk back
-    // would cost a column to save one press.
-    addButton(KEY_NEXT, (morePages || candFirst_ > 0 ? 0u : LV_BUTTONMATRIX_CTRL_DISABLED) | 1u, Cell::GridPage, 0);
-    addButton(KEY_COLLAPSE, 2, Cell::CloseGrid, 0);
+    addButton(KEY_PREV, (page_ > 0 ? 0u : LV_BUTTONMATRIX_CTRL_DISABLED) | 1u, Cell::GridPage, 0);
+    // Forward wraps to the first page, so the end of the list is one press from
+    // the start rather than a walk back through every page.
+    addButton(KEY_NEXT, (morePages || page_ > 0 ? 0u : LV_BUTTONMATRIX_CTRL_DISABLED) | 1u, Cell::GridPage, 1);
+    addButton(KEY_COLLAPSE, 1, Cell::CloseGrid, 0);
 }
 
 void BopomofoIME::loadPrefs()
